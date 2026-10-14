@@ -18,6 +18,7 @@ def test_cli_end_to_end(env, capsys, monkeypatch):
 
 
 def test_cli_refuses_target_with_empty_prompt(env, capsys):
+    (env / "targets" / "devils_advocate_prompt.md").write_text("", encoding="utf-8")
     cfg = env / "config.toml"
     cfg.write_text(cfg.read_text(encoding="utf-8").replace('targets = ["mock_demo"]',
                                                             'targets = ["mock_demo", "devils_advocate"]'),
