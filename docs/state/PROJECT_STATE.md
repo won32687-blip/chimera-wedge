@@ -1,6 +1,6 @@
 # 진행 상태
 
-마지막 갱신: 2026-10-13
+마지막 갱신: 2026-10-14
 
 ## 지금 단계
 **v0.1 단일 WEDGE 루프: 구현 완료, Mock 검증 완료, 실제 모델 시험 전.**
@@ -18,8 +18,8 @@
 - 코드: 루프 제어·판정·기록·재현·회귀·예산·중단·재개·CLI (실행 기록: `pytest` 57개 통과, Mock run `NO_TARGETS_LEFT`, VERIFIED 2개, regress `STILL_FAILING` 2개)
 
 ## 다음
-1. Devil's Advocate 프롬프트 원문 받기 → `targets/devils_advocate_prompt.md`
-2. 불변조건·판정 조건 초안(`targets/devils_advocate.toml`, ENGINE_INFERRED) 사용자 확정
+1. ~~Devil's Advocate 프롬프트 원문 받기~~ → v1.2 수령(2026-10-14), `targets/devils_advocate_prompt.md` (원본 보존: `targets/source/`)
+2. 불변조건 4개 수정안(`targets/devils_advocate.toml`, ENGINE_INFERRED) 사용자 확정 대기
 3. 단가 공식 페이지 재확인 (미확인)
 4. 실제 API 1회 시험 호출 → 정상이면 예상 비용 보고 후 탐색 run 1회 (승인 필요)
 
