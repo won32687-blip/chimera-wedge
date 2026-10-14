@@ -1,4 +1,5 @@
-"""Claude API Provider. 키는 환경 변수 ANTHROPIC_API_KEY에서만 읽고, 로그·DB에 남기지 않는다.
+"""Claude API Provider. 키는 ANTHROPIC_API_KEY에서만 읽고(프로젝트 .env → config.load_env_file이 넣어 줌),
+로그·DB에 남기지 않는다.
 
 - SDK 자체 재시도는 끈다(max_retries=0). 재시도·비용 정산은 executor가 직접 한다.
 - 서버 측 fallbacks(다른 모델로 대신 응답)는 쓰지 않는다. 시험 대상 모델이 바뀌면 판정이 무의미해지기 때문.
@@ -23,7 +24,8 @@ class AnthropicProvider:
         if timeout not in self._clients:
             import os
             if not os.environ.get("ANTHROPIC_API_KEY"):
-                raise ProviderError(ErrorKind.BLOCKED, "환경 변수 ANTHROPIC_API_KEY가 없습니다 (매뉴얼 '키 설정' 참고)")
+                raise ProviderError(ErrorKind.BLOCKED, "ANTHROPIC_API_KEY가 없습니다. "
+                                    "`python -m chimera set-key`로 프로젝트 .env에 저장하세요")
             self._clients[timeout] = anthropic.Anthropic(max_retries=0, timeout=timeout)
         return self._clients[timeout]
 

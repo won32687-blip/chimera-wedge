@@ -44,14 +44,31 @@ def run_dir(cfg: Config, run_id: str) -> Path:
     return d
 
 
-def create_run(conn, cfg: Config, spec: TargetSpec, mode: RunMode) -> str:
-    """새 실행 등록. 같은 DB에 RUNNING 실행이 있으면 거부한다 (이중 실행 방지)."""
+def continuation_plan(conn, cfg: Config, spec: TargetSpec, run_id: str = "-") -> dict | None:
+    """이전 탐색 실행(같은 대상·같은 명세 해시)의 기록으로 이어하기 계획을 만든다. 기록이 없으면 None.
+
+    이전 실행의 테스트·판정·finding은 읽기만 하고 바꾸지 않는다.
+    """
+    runs = codex.prior_runs(conn, spec, run_id)
+    if not runs:
+        return None
+    return codex.build_plan(spec, codex.prior_coverage(conn, spec, run_id), cfg.loop.cover_min_tests, runs)
+
+
+def create_run(conn, cfg: Config, spec: TargetSpec, mode: RunMode, fresh: bool = False) -> str:
+    """새 실행 등록. 같은 DB에 RUNNING 실행이 있으면 거부한다 (이중 실행 방지).
+
+    탐색 실행은 기본으로 이전 기록을 이어받는다(cursor['plan']). fresh=True면 처음부터 한다.
+    """
     busy = conn.execute("SELECT run_id FROM runs WHERE run_state IN ('RUNNING','STOPPING')").fetchone()
     if busy:
         raise Blocked(StopReason.NOT_ALLOWED,
                       f"이미 실행 중인 run이 있습니다: {busy[0]}. `chimera resume {busy[0]}` 또는 "
                       f"`chimera stop {busy[0]}`를 먼저 쓰세요")
     run_id = new_id("run")
+    cursor = initial_cursor()
+    if mode == RunMode.EXPLORE and not fresh:
+        cursor["plan"] = continuation_plan(conn, cfg, spec, run_id)
     with Tx(conn) as c:
         c.execute("INSERT OR IGNORE INTO targets(target_id, spec_hash, prompt_hash, model_key, spec_json, created_at)"
                   " VALUES (?,?,?,?,?,?)",
@@ -64,7 +81,7 @@ def create_run(conn, cfg: Config, spec: TargetSpec, mode: RunMode) -> str:
         c.execute("INSERT INTO runs(run_id, target_id, spec_hash, mode, run_state, limits_json, cursor_json,"
                   " wedge_model, judge_model) VALUES (?,?,?,?,?,?,?,?,?)",
                   (run_id, spec.target_id, spec.spec_hash, mode.value, RunState.CREATED.value,
-                   json.dumps(cfg.snapshot(), ensure_ascii=False), json.dumps(initial_cursor()),
+                   json.dumps(cfg.snapshot(), ensure_ascii=False), json.dumps(cursor),
                    cfg.attacker_model, cfg.judge_model))
     return run_id
 
@@ -211,7 +228,10 @@ class Controller:
         if not any(a in TEST_ACTIONS for a in allowed):
             return Proposal(action=default), None, "테스트가 필요 없는 선택지만 남아 WEDGE 호출 생략"
         ctx = codex.context_slice(self.conn, self.run_id, self.spec, self.cursor, [a.value for a in allowed],
-                                  default.value, self.budget.remaining_run(), self.cfg.loop.recent_tests_in_context)
+                                  default.value, self.budget.remaining_run(), self.cfg.loop.recent_tests_in_context,
+                                  self.cfg.loop.prior_inputs_in_context)
+        seen = (codex.seen_input_keys(self.conn, self.spec, self.run_id, self.cursor["invariant_id"])
+                if self.cursor.get("plan") else None)
         user = build_user(ctx)
         err = None
         raw = None
@@ -224,7 +244,7 @@ class Controller:
                 break
             raw = out.result.text
             try:
-                p = parse_proposal(raw, ctx, self.spec)
+                p = parse_proposal(raw, ctx, self.spec, seen)
                 self.cursor["attacker_failures"] = 0
                 return p, p.action.value, None
             except ProposalError as e:
@@ -282,7 +302,12 @@ class Controller:
          S.DEEPEN: self._deepen, S.SPLIT: self._deepen, S.NEXT_INVARIANT: self._next_invariant}[st]()
 
     def _acquire(self):
-        remaining = [i for i in self.spec.invariants if i.id not in self.cursor["done_invariants"]]
+        plan = self.cursor.get("plan")
+        ordered = self.spec.invariants
+        if plan:  # 이어하기: 미검사 규칙 먼저, 그다음 기존 규칙 심화 (codex.build_plan)
+            by_id = {i.id: i for i in self.spec.invariants}
+            ordered = [by_id[iid] for iid in plan["order"] if iid in by_id]
+        remaining = [i for i in ordered if i.id not in self.cursor["done_invariants"]]
         if not remaining:
             self._step(S.ACQUIRE, [A.STOP], None, A.STOP)
             raise _Stop(StopReason.NO_TARGETS_LEFT, "모든 불변조건 검사 완료")

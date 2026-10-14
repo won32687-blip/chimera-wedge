@@ -90,6 +90,15 @@ class RunMode(StrEnum):
     REGRESS = "REGRESS"
 
 
+class CoverageTrack(StrEnum):
+    """이어하기 실행에서 불변조건별 탐색 방식. run의 cursor(JSON)에만 저장하며 DB 상태 칼럼이 아니다.
+
+    이전 실행(같은 대상·같은 명세 해시)의 판정 기록으로 실행을 만들 때 정한다.
+    """
+    UNCOVERED = "UNCOVERED"              # 미검사 규칙 우선 탐색: 판정된 테스트가 기준 미만
+    DEEPEN_EXISTING = "DEEPEN_EXISTING"  # 기존 규칙 심화 공격: 이미 쓴 공격 계열·입력을 반복하지 않는다
+
+
 class TestPurpose(StrEnum):
     PROBE = "PROBE"
     REPRO = "REPRO"

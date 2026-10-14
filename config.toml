@@ -1,4 +1,4 @@
-# 실제 Claude API 설정. API 키는 여기 쓰지 않는다 → 환경 변수 ANTHROPIC_API_KEY.
+# 실제 Claude API 설정. API 키는 여기 쓰지 않는다 → 프로젝트 .env (python -m chimera set-key).
 # 실행 전 확인(호출 없음):  python -m chimera check --target devils_advocate
 
 [limits]
@@ -17,6 +17,8 @@ deepen_limit = 6
 stale_streak = 3
 exploit_share_max = 0.5
 recent_tests_in_context = 8
+cover_min_tests = 3            # 이어하기: 이전 판정 테스트가 이보다 적은 불변조건은 '미검사 우선'
+prior_inputs_in_context = 6    # 이어하기 '기존 규칙 심화' 때 WEDGE에게 보여 줄 이전 입력 수
 max_retries = 3
 retry_base_delay_s = 2
 retry_max_delay_s = 30

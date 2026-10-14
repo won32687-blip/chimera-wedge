@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,6 +64,8 @@ class LoopCfg:
     max_retries: int = 3
     retry_base_delay_s: float = 2.0
     retry_max_delay_s: float = 30.0
+    cover_min_tests: int = 3           # 이전 실행에서 판정(PASS/FAIL)된 테스트가 이보다 적으면 '미검사'로 본다
+    prior_inputs_in_context: int = 6   # 심화 공격 때 WEDGE에게 보여 줄 이전 실행 입력 수
 
 
 @dataclass
@@ -146,10 +149,61 @@ def _read_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
+ENV_FILE = ".env"
+SECRET_KEYS = ("ANTHROPIC_API_KEY",)
+
+
+def load_env_file(root: Path) -> list[str]:
+    """프로젝트 전용 .env에서 키를 읽어 이 프로세스에만 넣는다 (PC 전체 환경 변수는 건드리지 않는다).
+
+    .env 값이 PC 환경 변수보다 우선한다. 값은 어디에도 출력·기록하지 않고, 읽은 키 '이름'만 돌려준다.
+    """
+    path = root / ENV_FILE
+    if not path.is_file():
+        return []
+    loaded = []
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name, value = name.strip(), value.strip().strip('"').strip("'")
+        if name in SECRET_KEYS and value:
+            os.environ[name] = value
+            loaded.append(name)
+    return loaded
+
+
+def key_source(root: Path, name: str = "ANTHROPIC_API_KEY") -> str:
+    """키가 어디서 왔는지만 말한다 (값은 보지 않는다)."""
+    if name in load_env_file(root):
+        return "env_file"
+    return "environment" if os.environ.get(name) else "missing"
+
+
+def write_env_key(root: Path, name: str, value: str) -> Path:
+    """.env의 해당 줄만 바꾸거나 추가한다. 다른 줄은 그대로 둔다."""
+    path = root / ENV_FILE
+    lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
+    out, done = [], False
+    for line in lines:
+        if line.strip().split("=", 1)[0].strip() == name:
+            if not done:
+                out.append(f"{name}={value}")
+                done = True
+            continue
+        out.append(line)
+    if not done:
+        out.append(f"{name}={value}")
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return path
+
+
 def load_config(path: Path | str) -> Config:
     path = Path(path).resolve()
     raw = _read_toml(path)
     root = path.parent
+    load_env_file(root)
     try:
         lim = raw["limits"]
         limits = Limits(
