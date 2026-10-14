@@ -8,5 +8,7 @@
 | 진행 상태 | [state/PROJECT_STATE.md](state/PROJECT_STATE.md) |
 | 미룬 결정·할 일 | [state/backlog.md](state/backlog.md) |
 | 인계 | [HANDOFF.md](HANDOFF.md) |
-| 매뉴얼 | [manual/](manual/) |
+| 사용자 가이드 | [guide/사용자-가이드.md](guide/사용자-가이드.md) · [참고: 설정과 상태값](guide/참고-설정과-상태값.md) |
+| 운영·개발 가이드 | [dev/운영-개발-가이드.md](dev/운영-개발-가이드.md) |
+| 문서 작성 원칙 | [문서-작성-원칙.md](문서-작성-원칙.md) |
 | 원본 프롬프트 (수정 금지) | [../prompts/source/](../prompts/source/) |
