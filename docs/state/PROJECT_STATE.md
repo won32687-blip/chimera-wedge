@@ -19,7 +19,7 @@
 
 ## 다음
 1. ~~Devil's Advocate 프롬프트 원문 받기~~ → v1.2 수령(2026-10-14), `targets/devils_advocate_prompt.md` (원본 보존: `targets/source/`)
-2. 불변조건 4개 수정안(`targets/devils_advocate.toml`, ENGINE_INFERRED) 사용자 확정 대기
+2. ~~불변조건 확정~~ → 4개 사용자 확정(2026-10-14): PRAISE·HOLD·BOUNDARY·NOFAB
 3. 단가 공식 페이지 재확인 (미확인)
 4. 실제 API 1회 시험 호출 → 정상이면 예상 비용 보고 후 탐색 run 1회 (승인 필요)
 
