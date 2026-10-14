@@ -1,0 +1,84 @@
+# 실제 Claude API 설정. API 키는 여기 쓰지 않는다 → 환경 변수 ANTHROPIC_API_KEY.
+# 실행 전 확인(호출 없음):  python -m chimera check --target devils_advocate
+
+[limits]
+max_cost_usd_per_run = 1.0      # 1회 상한 (사용자 확정 2026-10-13)
+max_cost_usd_per_day = 3.0      # 하루 상한 (사용자 확정 2026-10-13)
+max_tests_per_run = 30
+max_model_calls_per_run = 120
+max_wall_minutes = 30
+max_consecutive_errors = 3
+
+[loop]
+probe_limit = 5
+families_per_invariant = 3
+repro_n = 3
+deepen_limit = 6
+stale_streak = 3
+exploit_share_max = 0.5
+recent_tests_in_context = 8
+max_retries = 3
+retry_base_delay_s = 2
+retry_max_delay_s = 30
+
+# 모델 등록표. 단가는 USD / 100만 토큰. 단가가 비어 있으면 실행하지 않는다.
+# 출처: claude-api 스킬 모델표(2026-10-06 캐시). (미확인) 공식 가격 페이지 https://www.anthropic.com/pricing 에서 재확인할 것.
+# max_tokens에는 생각(thinking) 토큰도 포함된다. 너무 작으면 답이 잘린다.
+
+[models.sonnet-5-5]
+provider = "anthropic"
+model_id = "claude-sonnet-5-5"
+input_usd_per_mtok = 2.0
+output_usd_per_mtok = 10.0
+cache_read_usd_per_mtok = 0.20
+max_tokens = 6000
+effort = "medium"
+timeout_s = 180
+price_source = "claude-api 스킬 모델표 2026-10-06 (미확인: 공식 가격 페이지 재확인)"
+
+# 채점기는 대상과 다른 모델로 둔다 (AIVE §12: 같은 모델의 자기 평가는 독립 검증이 아니다)
+[models.opus-5-5-judge]
+provider = "anthropic"
+model_id = "claude-opus-5-5"
+input_usd_per_mtok = 4.0
+output_usd_per_mtok = 20.0
+cache_read_usd_per_mtok = 0.20
+max_tokens = 3000
+effort = "low"
+timeout_s = 120
+price_source = "claude-api 스킬 모델표 2026-10-06 (미확인: 공식 가격 페이지 재확인)"
+
+[models.opus-5-5]
+provider = "anthropic"
+model_id = "claude-opus-5-5"
+input_usd_per_mtok = 4.0
+output_usd_per_mtok = 20.0
+cache_read_usd_per_mtok = 0.20
+max_tokens = 8000
+effort = "medium"
+timeout_s = 240
+price_source = "claude-api 스킬 모델표 2026-10-06 (미확인: 공식 가격 페이지 재확인)"
+
+[models.haiku-5-5]
+provider = "anthropic"
+model_id = "claude-haiku-5-5"
+input_usd_per_mtok = 0.10      # 프롬프트 10만 토큰 이하 단가
+output_usd_per_mtok = 0.50
+max_tokens = 3000
+effort = "medium"
+timeout_s = 120
+price_source = "claude-api 스킬 모델표 2026-10-06 (미확인: 공식 가격 페이지 재확인)"
+
+# 공격자(WEDGE)와 채점기는 서로 다른 키로 분리한다. 바꿀 때는 여기만 고친다.
+[roles]
+attacker = "sonnet-5-5"
+judge = "opus-5-5-judge"
+
+# 승인된 대상만 실행한다. 여기 없는 target은 실행 거부.
+[allowed]
+targets = ["devils_advocate"]
+
+[paths]
+data_dir = "data/live"
+targets_dir = "targets"
+prompts_dir = "prompts"
