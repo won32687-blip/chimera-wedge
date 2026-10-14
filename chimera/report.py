@@ -49,7 +49,12 @@ def collect(conn, run_id: str) -> dict:
     steps = [dict(r) for r in conn.execute(
         "SELECT seq, wedge_state, applied_action, proposed_action, override_reason FROM steps"
         " WHERE run_id=? ORDER BY seq", p).fetchall()]
-    return dict(run=run, tests=tests, executed=executed, evals=evals, attempts=attempts, findings=findings,
+    plan = json.loads(run.get("cursor_json") or "{}").get("plan")
+    inv_tests = {r[0]: r[1] for r in conn.execute(
+        "SELECT invariant_id, COUNT(*) FROM tests WHERE run_id=? AND purpose IN ('PROBE','VARIANT','SPLIT')"
+        " GROUP BY invariant_id", p).fetchall()}
+    return dict(run=run, plan=plan, inv_tests=inv_tests, tests=tests, executed=executed, evals=evals,
+                attempts=attempts, findings=findings,
                 cost=cost, calls=calls, checked=sorted(checked), unchecked=[i for i in all_inv if i not in checked],
                 regress=regress, overrides=overrides, wedge_errors=wedge_errors, steps=steps)
 
@@ -67,8 +72,22 @@ def render(d: dict) -> str:
          f"- 모드: {r['mode']} · 상태: **{r['run_state']}** · 멈춘 이유: **{r['stop_reason'] or '-'}**",
          f"- 상세: {r['stop_detail'] or '-'}",
          f"- 시작 {r['started_at'] or '-'} · 종료 {r['ended_at'] or '-'}",
-         f"- WEDGE 모델 `{r['wedge_model']}` · 채점기 모델 `{r['judge_model']}`", "",
-         "## 테스트", "",
+         f"- WEDGE 모델 `{r['wedge_model']}` · 채점기 모델 `{r['judge_model']}`", ""]
+    plan = d.get("plan")
+    if plan:
+        L += ["## 이어하기 계획", "",
+              f"- 이어받은 실행: {', '.join(plan['continued_from'])} (이전 기록은 읽기만 하고 바꾸지 않음)",
+              f"- 이전 판정(PASS/FAIL) 테스트가 {plan['cover_min_tests']}개 미만이면 '미검사 우선', "
+              f"아니면 '기존 규칙 심화'(이전에 쓴 공격 계열·같은 입력 재사용 금지)", "",
+              "| 순서 | 불변조건 | 방식 | 이전 판정 | 이전 FAIL | 이전에 쓴 공격 계열 | 이번 탐색 테스트 |",
+              "|---|---|---|---|---|---|---|"]
+        for n, iid in enumerate(plan["order"], 1):
+            pr = plan["prior"][iid]
+            label = "미검사 우선" if plan["track"][iid] == "UNCOVERED" else "기존 규칙 심화"
+            L.append(f"| {n} | {iid} | {label} | {pr['judged']} | {pr['fail']} | "
+                     f"{', '.join(pr['families']) or '-'} | {d['inv_tests'].get(iid, 0)} |")
+        L.append("")
+    L += ["## 테스트", "",
          "| 항목 | 개수 |", "|---|---|",
          f"| 생성된 테스트 | {d['tests']} |",
          f"| 응답을 받은 테스트 (EXECUTED) | {d['executed']} |"]

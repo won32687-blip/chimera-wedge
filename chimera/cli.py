@@ -1,7 +1,8 @@
 """명령줄 진입점. Windows PowerShell에서도 그대로 쓴다.
 
   chimera check  --target mock_demo            설정·대상·키·예상 비용 확인 (API 호출 없음)
-  chimera run    --target mock_demo            탐색 실행
+  chimera run    --target mock_demo [--fresh]  탐색 실행 (기본: 이전 기록 이어받기)
+  chimera set-key                              API 키를 프로젝트 .env에 저장 (입력 숨김)
   chimera regress --target mock_demo           회귀 세트 재실행
   chimera stop   RUN_ID                        다른 창에서 중단 요청
   chimera resume RUN_ID                        멈춘 실행 이어가기
@@ -14,14 +15,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
 from . import __version__
 from .budget import Budget, BudgetExceeded, estimate_input_tokens
-from .config import ConfigError, load_config, load_target
-from .controller import Controller, cleanup_dangling, create_run, run_dir
+from .config import ConfigError, key_source, load_config, load_target, write_env_key
+from .controller import Controller, cleanup_dangling, continuation_plan, create_run, run_dir
 from .db import connect
 from .enums import RunMode, StopReason
 from .executor import Blocked, guard_target
@@ -51,7 +51,25 @@ def _print_result(conn, cfg, run_id, result):
     print(f"  이번 실행 비용: ${b.run_settled():.6f} (상한 ${cfg.limits.max_cost_usd_per_run}) · "
           f"오늘 합계: ${b.day_committed():.6f} (상한 ${cfg.limits.max_cost_usd_per_day})")
     print(f"  리포트: {run_dir(cfg, run_id) / 'report.md'}")
+    if reason == StopReason.BUDGET_EXHAUSTED.value:
+        target = conn.execute("SELECT target_id FROM runs WHERE run_id=?", (run_id,)).fetchone()[0]
+        print(f"  이어서 하려면: `python -m chimera run --target {target}` — 이전 기록을 이어받아 "
+              f"미검사 규칙부터 시험합니다 (1회 상한은 새 실행마다 새로 적용, 하루 상한은 그대로)")
     return EXIT_BLOCKED if state == "BLOCKED" else EXIT_OK
+
+
+def _print_plan(plan: dict | None) -> None:
+    if not plan:
+        print("이어하기: 이전 탐색 기록 없음 → 명세 순서대로 처음부터 시험합니다.")
+        return
+    print(f"이어하기: 이전 실행 {len(plan['continued_from'])}개의 기록을 이어받습니다 "
+          f"({', '.join(plan['continued_from'])})")
+    print(f"  판정된 테스트가 {plan['cover_min_tests']}개 미만이면 미검사로 보고 먼저 시험합니다.")
+    for iid in plan["order"]:
+        p = plan["prior"][iid]
+        label = "미검사 우선" if plan["track"][iid] == "UNCOVERED" else "기존 규칙 심화"
+        print(f"  {iid:<18} {label:<10} 이전 판정 {p['judged']}개 (FAIL {p['fail']}) · 판정 보류 등 {p['unjudged']}개 · "
+              f"쓴 공격 계열: {', '.join(p['families']) or '-'}")
 
 
 def _allowed_first(cfg, target_id: str):
@@ -88,11 +106,16 @@ def cmd_check(args) -> int:
     print(f"\n탐색 1턴(WEDGE 1 + 대상 1 + 채점 1) 최대 예약액 약 ${turn:.4f} · "
           f"1회 상한 ${cfg.limits.max_cost_usd_per_run} · 하루 상한 ${cfg.limits.max_cost_usd_per_day}")
     if need_key:
-        print("API 키: " + ("ANTHROPIC_API_KEY 설정됨" if os.environ.get("ANTHROPIC_API_KEY")
-                           else "ANTHROPIC_API_KEY 없음 → 실제 실행 전에 설정 필요"))
+        src = key_source(cfg.root)
+        print("API 키: " + {"env_file": "ANTHROPIC_API_KEY 설정됨 (프로젝트 .env)",
+                           "environment": "ANTHROPIC_API_KEY 설정됨 (PC 환경 변수 — 프로젝트 .env로 옮기길 권장: "
+                                          "`python -m chimera set-key`)",
+                           "missing": "ANTHROPIC_API_KEY 없음 → `python -m chimera set-key`로 설정"}[src])
     conn = connect(cfg.data_dir / "chimera.db")
     b = Budget(conn, "-", cfg.limits)
     print(f"오늘 사용액: ${b.day_committed():.6f}")
+    print()
+    _print_plan(continuation_plan(conn, cfg, spec))
     print("\n확인 완료 (API 호출 없음).")
     return EXIT_OK
 
@@ -103,8 +126,11 @@ def _start(args, mode: RunMode) -> int:
     spec = load_target(cfg, args.target)
     guard_target(cfg, spec)
     Budget(conn, "-", cfg.limits).check_can_start_run()
-    run_id = create_run(conn, cfg, spec, mode)
+    run_id = create_run(conn, cfg, spec, mode, fresh=getattr(args, "fresh", False))
     print(f"실행 시작: {run_id} ({mode.value}, 대상 {spec.target_id})")
+    if mode == RunMode.EXPLORE:
+        cur = json.loads(conn.execute("SELECT cursor_json FROM runs WHERE run_id=?", (run_id,)).fetchone()[0])
+        _print_plan(cur.get("plan"))
     print(f"  멈추기: Ctrl+C · 다른 창에서 `python -m chimera stop {run_id}` · "
           f"또는 {run_dir(cfg, run_id) / 'STOP'} 파일 만들기")
     ctl = Controller(conn, cfg, spec, run_id)
@@ -173,6 +199,20 @@ def cmd_status(args) -> int:
     return EXIT_OK
 
 
+def cmd_set_key(args) -> int:
+    """키를 화면에 보이지 않게 입력받아 설정 파일과 같은 폴더의 .env에 저장한다. 값은 출력하지 않는다."""
+    import getpass
+    root = Path(args.config).resolve().parent
+    value = getpass.getpass("ANTHROPIC_API_KEY를 붙여 넣고 Enter (입력 내용은 화면에 보이지 않습니다): ").strip()
+    if not value:
+        print("입력이 비어 있어 저장하지 않았습니다.")
+        return EXIT_ERR
+    path = write_env_key(root, "ANTHROPIC_API_KEY", value)
+    print(f"저장했습니다: {path} (값은 표시하지 않습니다)")
+    print("확인: `python -m chimera check --target devils_advocate`에서 '설정됨 (프로젝트 .env)'가 보이면 됩니다.")
+    return EXIT_OK
+
+
 def cmd_report(args) -> int:
     from .report import write_report
     cfg, conn = _open(args)
@@ -195,12 +235,15 @@ def build_parser() -> argparse.ArgumentParser:
         return sp
 
     add("check", cmd_check, "설정·대상·예상 비용 확인 (API 호출 없음)").add_argument("--target", required=True)
-    add("run", cmd_run, "탐색 실행").add_argument("--target", required=True)
+    sp = add("run", cmd_run, "탐색 실행 (기본: 이전 기록 이어받기)")
+    sp.add_argument("--target", required=True)
+    sp.add_argument("--fresh", action="store_true", help="이전 기록을 이어받지 않고 처음부터")
     add("regress", cmd_regress, "회귀 세트 재실행").add_argument("--target", required=True)
     add("resume", cmd_resume, "멈춘 실행 이어가기").add_argument("run_id")
     add("stop", cmd_stop, "실행 중단 요청").add_argument("run_id")
     add("status", cmd_status, "실행 상태").add_argument("run_id", nargs="?")
     add("report", cmd_report, "리포트 다시 만들기").add_argument("run_id")
+    add("set-key", cmd_set_key, "API 키를 프로젝트 .env에 저장 (입력 숨김)")
     return p
 
 

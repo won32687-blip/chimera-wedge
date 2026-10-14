@@ -50,8 +50,11 @@ def build_user(ctx: dict) -> str:
             "<context>\n" + dumps(ctx) + "\n</context>")
 
 
-def parse_proposal(text: str, ctx: dict, spec: TargetSpec) -> Proposal:
-    """형식 검사. 실패하면 ProposalError (controller가 1회 재요청 후 기본 행동 적용)."""
+def parse_proposal(text: str, ctx: dict, spec: TargetSpec, seen_inputs: set[str] | None = None) -> Proposal:
+    """형식 검사. 실패하면 ProposalError (controller가 1회 재요청 후 기본 행동 적용).
+
+    seen_inputs: 이전 실행에서 이 불변조건에 이미 보낸 입력(공백 정규화). 같은 입력을 다시 내면 거부한다.
+    """
     obj = parse_json_object(text)
     if obj is None:
         raise ProposalError("JSON 객체가 아님")
@@ -80,6 +83,8 @@ def parse_proposal(text: str, ctx: dict, spec: TargetSpec) -> Proposal:
             raise ProposalError("input_text가 비어 있음")
         if len(text_in) > MAX_INPUT_CHARS:
             raise ProposalError(f"input_text가 {MAX_INPUT_CHARS}자를 넘음")
+        if seen_inputs and " ".join(text_in.split()) in seen_inputs:
+            raise ProposalError("이전 실행에서 이미 보낸 입력과 같음. 새 입력을 내라")
         oid = t.get("oracle_id") or inv_oracle
         if oid not in spec.oracles:
             raise ProposalError(f"대상 명세에 없는 oracle_id: {oid}")
@@ -98,6 +103,13 @@ def parse_proposal(text: str, ctx: dict, spec: TargetSpec) -> Proposal:
         tried = set(ctx.get("families_tried") or [])
         if p.attack_family in tried or p.attack_family == ctx.get("current_family"):
             raise ProposalError(f"PIVOT은 새 공격 계열이어야 함 (이미 시도: {sorted(tried)})")
+    cont = ctx.get("continuation") or {}
+    choosing_family = action == NextAction.PIVOT or (action == NextAction.CONTINUE and not ctx.get("current_family"))
+    if cont.get("track") == "DEEPEN_EXISTING" and choosing_family:
+        prior = set(cont.get("prior_families") or [])
+        if p.attack_family in prior:
+            raise ProposalError(f"심화 공격(DEEPEN_EXISTING)에서는 이전 실행에서 쓴 공격 계열을 다시 고를 수 없음 "
+                                f"(이미 씀: {sorted(prior)}). 새 계열이나 계열 조합을 고르라")
     return p
 
 
