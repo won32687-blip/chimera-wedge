@@ -115,6 +115,74 @@ def judge_reproduction(conn, run_id: str, finding_id: str, repro_results: list[t
     return new.value
 
 
+_PRIOR_TESTS = (
+    "FROM tests t JOIN runs r ON r.run_id=t.run_id LEFT JOIN attacks a ON a.attack_id=t.attack_id"
+    " WHERE r.target_id=? AND r.spec_hash=? AND r.mode='EXPLORE' AND t.run_id<>?"
+    " AND t.purpose IN ('PROBE','VARIANT','SPLIT')")
+_LATEST_EVAL = "(SELECT evaluation_status FROM evaluations e WHERE e.test_id=t.test_id ORDER BY e.rowid DESC LIMIT 1)"
+
+
+def prior_coverage(conn, spec, exclude_run_id: str) -> dict:
+    """같은 대상·같은 명세 해시의 이전 탐색 실행에서 불변조건별로 무엇을 했는지 센다. 읽기만 한다.
+
+    판정된 테스트(judged)는 최신 판정이 PASS 또는 FAIL인 것만 센다. INCONCLUSIVE·INVALID·NOT_RUN은
+    '검사했다'고 보지 않는다. 명세·프롬프트가 바뀌면(spec_hash가 다르면) 이전 기록을 쓰지 않는다.
+    """
+    cov = {i.id: {"judged": 0, "unjudged": 0, "fail": 0, "families": []} for i in spec.invariants}
+    rows = conn.execute(f"SELECT t.invariant_id, a.attack_family, {_LATEST_EVAL} AS ev {_PRIOR_TESTS}"
+                        " ORDER BY t.created_at, t.rowid", (spec.target_id, spec.spec_hash, exclude_run_id)).fetchall()
+    for r in rows:
+        c = cov.get(r["invariant_id"])
+        if c is None:
+            continue
+        if r["ev"] in ("PASS", "FAIL"):
+            c["judged"] += 1
+            c["fail"] += r["ev"] == "FAIL"
+            if r["attack_family"] and r["attack_family"] not in c["families"]:
+                c["families"].append(r["attack_family"])
+        else:
+            c["unjudged"] += 1
+    return cov
+
+
+def build_plan(spec, coverage: dict, cover_min_tests: int, prior_runs: list[str]) -> dict:
+    """불변조건 순서와 탐색 방식을 정한다. 미검사(UNCOVERED)를 먼저, 그다음 심화(DEEPEN_EXISTING).
+
+    같은 방식 안에서는 판정된 테스트가 적은 순서, 같으면 명세 순서.
+    """
+    from .enums import CoverageTrack
+    order_idx = {i.id: n for n, i in enumerate(spec.invariants)}
+    track = {iid: (CoverageTrack.UNCOVERED if c["judged"] < cover_min_tests else CoverageTrack.DEEPEN_EXISTING).value
+             for iid, c in coverage.items()}
+    order = sorted(coverage, key=lambda iid: (track[iid] != CoverageTrack.UNCOVERED.value,
+                                              coverage[iid]["judged"], order_idx[iid]))
+    return {"continued_from": prior_runs, "order": order, "track": track, "prior": coverage,
+            "cover_min_tests": cover_min_tests}
+
+
+def prior_runs(conn, spec, exclude_run_id: str) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT run_id FROM runs WHERE target_id=? AND spec_hash=? AND mode='EXPLORE' AND run_id<>?"
+        " AND EXISTS (SELECT 1 FROM tests t WHERE t.run_id=runs.run_id) ORDER BY started_at, rowid", (spec.target_id, spec.spec_hash, exclude_run_id)).fetchall()]
+
+
+def _norm(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def prior_inputs(conn, spec, run_id: str, invariant_id: str) -> list[dict]:
+    """이전 실행에서 이 불변조건에 보낸 입력 (최근 순)."""
+    rows = conn.execute(f"SELECT t.input_text, a.attack_family, {_LATEST_EVAL} AS ev {_PRIOR_TESTS}"
+                        " AND t.invariant_id=? ORDER BY t.created_at DESC, t.rowid DESC",
+                        (spec.target_id, spec.spec_hash, run_id, invariant_id)).fetchall()
+    return [{"input": r["input_text"] or "", "attack_family": r["attack_family"], "evaluation": r["ev"]} for r in rows]
+
+
+def seen_input_keys(conn, spec, run_id: str, invariant_id: str) -> set[str]:
+    """이전 실행 입력과 '공백만 다른 같은 입력'을 거르기 위한 키."""
+    return {_norm(p["input"]) for p in prior_inputs(conn, spec, run_id, invariant_id)}
+
+
 def latest_eval(conn, test_id: str) -> dict | None:
     r = conn.execute("SELECT * FROM evaluations WHERE test_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
                      (test_id,)).fetchone()
@@ -122,7 +190,7 @@ def latest_eval(conn, test_id: str) -> dict | None:
 
 
 def context_slice(conn, run_id: str, spec, cursor: dict, allowed: list[str], default: str,
-                  remaining_usd: float, recent_n: int) -> dict:
+                  remaining_usd: float, recent_n: int, prior_n: int = 6) -> dict:
     """WEDGE에게 줄 최소 정보. 대상 응답은 UNTRUSTED 데이터로 표시한다."""
     inv = next((i for i in spec.invariants if i.id == cursor.get("invariant_id")), None)
     oracle = spec.oracles.get(inv.oracle_id) if inv else None
@@ -145,6 +213,20 @@ def context_slice(conn, run_id: str, spec, cursor: dict, allowed: list[str], def
             focus = {"finding_id": fr["finding_id"], "violated_condition_id": fr["violated_condition_id"],
                      "mechanism_tag": fr["mechanism_tag"], "verification_status": fr["verification_status"],
                      "minimal_input": fr["input_text"], "repro": f"{fr['repro_fail']}/{fr['repro_total']}"}
+    continuation = None
+    plan = cursor.get("plan")
+    if plan and inv:
+        prior = plan["prior"].get(inv.id, {})
+        track = plan["track"].get(inv.id)
+        continuation = {
+            "track": track,
+            "prior_judged_tests": prior.get("judged", 0),
+            "prior_families": prior.get("families", []),
+            "untried_spec_families": [f for f in inv.attack_families if f not in prior.get("families", [])],
+            "prior_inputs": [{**p, "input": p["input"][:400]}
+                             for p in prior_inputs(conn, spec, run_id, inv.id)[:prior_n]]
+            if track == "DEEPEN_EXISTING" else [],
+        }
     return {
         "state": cursor.get("state"),
         "allowed_actions": allowed,
@@ -169,6 +251,7 @@ def context_slice(conn, run_id: str, spec, cursor: dict, allowed: list[str], def
                           "target_response_UNTRUSTED": (r["response"] or "")[:1500],
                           "evaluation": r["ev"], "violated_condition_id": r["vid"]} for r in recent],
         "budget_remaining_usd": round(remaining_usd, 4),
+        "continuation": continuation,
     }
 
 
