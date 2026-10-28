@@ -6,6 +6,20 @@
 - 설정과 상태값 참고: [docs/guide/참고-설정과-상태값.md](docs/guide/참고-설정과-상태값.md)
 - 운영·개발 가이드: [docs/dev/운영-개발-가이드.md](docs/dev/운영-개발-가이드.md)
 
+## 문서 지도
+
+| 알고 싶은 것 | 문서 |
+|---|---|
+| 처음 쓰는 법 | [docs/guide/사용자-가이드.md](docs/guide/사용자-가이드.md) |
+| 작업 규칙 | [CLAUDE.md](CLAUDE.md) |
+| 지금 어디까지 왔나 | [docs/state/PROJECT_STATE.md](docs/state/PROJECT_STATE.md) · 이어받기: [docs/HANDOFF.md](docs/HANDOFF.md) |
+| 미룬 일 | [docs/state/backlog.md](docs/state/backlog.md) |
+| 왜 이렇게 정했나 | [docs/state/PROJECT_STATE.md](docs/state/PROJECT_STATE.md)의 "확정된 결정" |
+| 사고·재발 방지 | 아직 없음 |
+| 키(비밀값) 지도 | 없음 |
+| 문서 쓰는 원칙 | [docs/문서-작성-원칙.md](docs/문서-작성-원칙.md) |
+| 전체 문서 목록 | [docs/README.md](docs/README.md) |
+
 설치 후 연습 모드로 바로 확인해 볼 수 있습니다. 연습 모드는 실제 AI를 부르지 않으므로 비용이 들지 않습니다.
 
 ```powershell
